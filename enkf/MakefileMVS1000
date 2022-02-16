@@ -1,0 +1,29 @@
+NAME = ../../bin/MVS1000
+include ../Make.inc
+#MODULE = -module ../../module
+#INCLUDES = -I/opt/sgi/mpt/mpt-2.11/include -I/home/leduc/qc/include
+#LIBPATHS = -L/opt/sgi/mpt/mpt-2.11/lib -L/home/leduc/qc/lib -L/home/leduc/enkf/lib 
+LIBS = -lmpi
+#F90 = ifort
+#F90FLAGS = -traceback -O3 -w -auto -convert big_endian -assume byterecl $(INCLUDES) $(MODULE)
+#LINK = /home/leduc/opt/mpich2/bin/mpif90 -traceback
+#LINK = ifort -traceback
+
+OBJS = variable.o random.o netlib.o nhmlib.o enkflib.o nodeInfo.o nodempi.o nodeField.o nodeControl.o nodeScorr.o mainMVS1000.o
+
+.SUFFIXES: .o .f .f90 .F90
+.f.o:
+	$(F90) $(F90FLAGS) -c $<
+
+.f90.o:
+	$(F90) $(F90FLAGS) -c $<
+
+.F90.o:
+	$(F90) $(F90FLAGS) -c $<
+
+all: $(OBJS)
+	$(LD) $(LDFLAGS) -o $(NAME) $(OBJS) $(LIBPATHS) $(LIBS)
+
+clean:
+	rm -f *.o *.mod
+
