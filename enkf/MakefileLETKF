@@ -3,16 +3,18 @@ include ../Make.inc
 #MODULE = -module ../../module
 #INCLUDES = -I/opt/sgi/mpt/mpt-2.11/include -I/home/leduc/qc/include
 #LIBPATHS = -L/opt/sgi/mpt/mpt-2.11/lib -L/home/leduc/qc/lib -L/home/leduc/enkf/lib 
-LIBS = -ljnovacda -llbfgsb -lmpi -lnusdas -lnwp -lz
+LIBS = -ljnovacda -llbfgsb -lmpi -lnusdas -lnwp -lz -lropp -lrttov -leigenexa
 #F90 = ifort
 #F90FLAGS = -traceback -O3 -w -auto -convert big_endian -assume byterecl $(INCLUDES) $(MODULE)
 #LINK = /home/leduc/opt/mpich2/bin/mpif90 -traceback
 #LINK = ifort -traceback
 
-OBJS = variable.o random.o netlib.o nhmlib.o tclib.o enkflib.o nodeInfo.o nodempi.o nodeObsSpaceField.o nodeObsSpaceControl.o \
+OBJS = variable.o random.o netlib.o nhmlib.o tclib.o rttovlib.o enkflib.o nodeInfo.o nodempi.o \
+       nodeObsSpaceFieldCNV.o nodeObsSpaceFieldTC.o nodeObsSpaceFieldGNSS.o nodeObsSpaceFieldRAD.o nodeObsSpaceField.o nodeObsSpaceControl.o \
        nodeObsValidField.o nodeObsValidControl.o nodeObsField.o nodeObsControl.o nodeField.o nodeControl.o \
        nodeProfileField.o nodeProfileControl.o nodeObsVLocField.o nodeObsVLocControl.o nodeBCField.o nodeBCControl.o \
-       nodeHField.o nodeHControl.o localization.o nodePreH.o lbfgsb_driver.o mainLETKF1000.o
+       nodeHFieldCNV.o nodeHFieldTC.o nodeHFieldGNSS.o nodeHFieldRAD.o nodeHField.o nodeHControl.o \
+	   localization.o nodePreH.o lbfgsb_driver.o mainLETKF.o
 
 .SUFFIXES: .o .f .f90 .F90
 .f.o:
