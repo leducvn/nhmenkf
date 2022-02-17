@@ -2,6 +2,7 @@ program letkf
    use variable
    use nhmlib
    use enkflib
+   use rttovlib
    use interpolate, only : setGridInf
    use NodeInfo_class
    use NodeObsSpaceControl_class
@@ -73,7 +74,8 @@ program letkf
    call new(info, 1, nxpe, nype, nepe, myid, nx0, ny0, ne0, hrange)
    call initialize_mpi(info)
    call destroy(info)
-   call new_conv(global_obsspace, nx0, ny0, nt0)
+   call initialize_rttov(myid)
+   call new_convgnss(global_obsspace, nx0, ny0, nt0)
    call read_obs(global_obsspace, myid)
    allocate(istart(nxpe), iend(nxpe), jstart(nype), jend(nype))
    if (myid == 0) then
@@ -142,8 +144,10 @@ program letkf
    !
    !
    ! Observation space
-   call new_conv(obsspace, nx, ny, nt0)
+   call new_convgnss(obsspace, nx, ny, nt0)
    call scatter_obs(global_obsspace, info, obsspace)
+   call MPI_BARRIER(MPI_COMM_WORLD, ierror)
+   call destroy(global_obsspace)
    ! Observation and observational errors
    call new(obs, obsspace)
    call new(error, obsspace)
@@ -176,17 +180,17 @@ program letkf
    updated(:,:,:) = .False.
    do i = 1, nx-1
       do j = 1, ny-1
-	 do it = 1, nt
-	    call get_mobs(obsspace, i, j, it, mobs)
-	    if (mobs == 0) cycle
-	    do ii = i, i+1
-	       do jj = j, j+1
-		  if (updated(ii,jj,it)) cycle
-		  nxyt = nxyt + 1
-		  updated(ii,jj,it) = .True.
-	       end do
-	    end do
-	 end do
+	      do it = 1, nt
+	         call get_mobs(obsspace, i, j, it, mobs)
+	         if (mobs == 0) cycle
+	         do ii = i, i+1
+	         do jj = j, j+1
+		         if (updated(ii,jj,it)) cycle
+		         nxyt = nxyt + 1
+		         updated(ii,jj,it) = .True.
+	         end do
+	         end do
+	      end do
       end do
    end do
    allocate(k2ijt(nxyt,3))
@@ -194,18 +198,18 @@ program letkf
    updated(:,:,:) = .False.
    do i = 1, nx-1
       do j = 1, ny-1
-	 do it = 1, nt
-	    call get_mobs(obsspace, i, j, it, mobs)
-	    if (mobs == 0) cycle
-	    do ii = i, i+1
-	       do jj = j, j+1
-		  if (updated(ii,jj,it)) cycle
-	          ixyt = ixyt + 1
-	          k2ijt(ixyt,1) = ii; k2ijt(ixyt,2) = jj; k2ijt(ixyt,3) = it
-		  updated(ii,jj,it) = .True.
-	       end do
-	    end do
-	 end do
+	      do it = 1, nt
+	         call get_mobs(obsspace, i, j, it, mobs)
+	         if (mobs == 0) cycle
+	         do ii = i, i+1
+	         do jj = j, j+1
+		         if (updated(ii,jj,it)) cycle
+	            ixyt = ixyt + 1
+	            k2ijt(ixyt,1) = ii; k2ijt(ixyt,2) = jj; k2ijt(ixyt,3) = it
+		         updated(ii,jj,it) = .True.
+	         end do
+	         end do
+	      end do
       end do
    end do
    deallocate(updated)
@@ -234,9 +238,9 @@ program letkf
       do j = 1, ny-1
          call get_mobs(obsspace, i, j, mobs)
          if (mobs > 0) then
-	    ncol0 = ncol0 + 1
-	    mmax = mmax + mobs
-	 end if
+	         ncol0 = ncol0 + 1
+	         mmax = mmax + mobs
+	      end if
       end do
    end do
    allocate(processed(loc%nvar,nx,ny))
@@ -245,13 +249,13 @@ program letkf
       allocate(ix0(ncol0), jy0(ncol0), ix(ncol0), jy(ncol0))
       icol = 0
       do i = 1, nx-1
-	 do j = 1, ny-1
-	    call get_mobs(obsspace, i, j, mobs)
-	    if (mobs > 0) then
-	       icol = icol + 1
-	       ix0(icol) = i; jy0(icol) = j
-	    end if
-	 end do
+	   do j = 1, ny-1
+	      call get_mobs(obsspace, i, j, mobs)
+	      if (mobs > 0) then
+	         icol = icol + 1
+	         ix0(icol) = i; jy0(icol) = j
+	      end if
+	   end do
       end do
       do i = 1, ncol0
          processed(:,ix0(i),jy0(i)) = .False.
