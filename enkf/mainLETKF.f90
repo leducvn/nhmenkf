@@ -37,7 +37,7 @@ program letkf
    type(NodeProfileControl) :: xbck, xobs, xpert
    type(NodeObsSpaceControl) :: obsspace, global_obsspace
    type(NodeObsValidControl) :: valid, validtmp
-   type(NodeObsControl) :: obs, error, ybck, xyloc
+   type(NodeObsControl) :: obs, error, ybck, ytmp, xyloc
    type(NodeObsControl), dimension(:), allocatable :: ypert
    type(NodeObsVLocControl) :: logp, corr, vproftmp, vloc
    type(NodeObsVLocControl), dimension(:), allocatable :: vprof
@@ -263,6 +263,7 @@ program letkf
    end if
    !
    ! First vertical localization: set vertical perturbations
+   !call MPI_BARRIER(MPI_COMM_WORLD, ierror)
    if (myid == 0) print*, 'VLOC0'
    call new(vloc, obsspace, nz0, 1)
    call new(logp, obsspace, nz0, 1)
@@ -279,11 +280,11 @@ program letkf
       call apply_preH(preH, control_mode, processed(1,:,:), k2ijt, xpert, xbck, xobs, nxyt)
       ! mean logp: use vloc as temporary variable
       call set_logp(vloc, info, processed(1,:,:), k2ijt, obsspace, xobs, nx, ny, nxyt)
-      call add(logp, vloc)
+      call add_vloc(logp, vloc)
       ! mean vprof: use corr as ensemble mean
       call new(vprof(ie), obsspace, nz0)
       call set_profile(vprof(ie), info, processed(1,:,:), k2ijt, obsspace, xobs, nx, ny, nxyt)
-      call add(corr, vprof(ie))
+      call add_vloc(corr, vprof(ie))
       ! mean y: use ybck as ensemble mean
       call apply_H(h, info, processed(1,:,:), k2ijt, xobs, obsspace, validtmp, ypert(ie), nx, ny, nxyt)
       call and(valid, validtmp)
@@ -309,6 +310,7 @@ program letkf
    call and(valid, validtmp)
    !
    ! Second vertical localization: normalize perturbations
+   !call MPI_BARRIER(MPI_COMM_WORLD, ierror)
    if (myid == 0) print*, 'VLOC1'
    call set_field(corr, 0.d0)
    call set_field(ybck, 0.d0)
@@ -332,6 +334,7 @@ program letkf
    end do
    !
    ! Third vertical localization: correlation
+   !call MPI_BARRIER(MPI_COMM_WORLD, ierror)
    if (myid == 0) print*, 'VLOC2'
    call set_field(corr, 0.d0)
    do ie = 1, ne
@@ -354,6 +357,7 @@ program letkf
       call divide_obs(ypert(ie), sqrt(1.d0*(ne0-1)))
       call divide_obs(ypert(ie), error)
    end do
+   !call MPI_BARRIER(MPI_COMM_WORLD, ierror)
    if (myid == 0) print*, 'VLOC3'
    !
    !
@@ -651,7 +655,7 @@ program letkf
       call destroy(ypert(ie))
    end do
    deallocate(xapert, ypert)
-   call destroy(obsspace); call destroy(global_obsspace)
+   call destroy(obsspace)
    call destroy(valid); call destroy(validtmp)
    call destroy(obs); call destroy(error); call destroy(ybck)
    call destroy(h); call destroy(preH)
