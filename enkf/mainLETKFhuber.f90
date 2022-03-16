@@ -42,13 +42,14 @@ program letkf
    type(NodeObsVLocControl) :: logp, corr, vproftmp, vloc
    type(NodeObsVLocControl), dimension(:), allocatable :: vprof
    !
+   real(r_size), parameter :: tolerance = 1.e-5
    integer :: mmax, mobs, nrank, inflana, adapmode, inflpoly, nlevnhm, nxyt, ncol0, ncol, myidx, myidy, myide
-   integer :: id, idx, idy, is, ie, js, je, dis, die, djs, dje, ixyt, ivar, ivarnhm, iter, icol, ia, ja
-   real(r_size) :: rhoML, rhoMLold, dh
+   integer :: id, idx, idy, is, ie, js, je, dis, die, djs, dje, ixyt, ivar, ivarnhm, iter, icol, ia, ja, iflag
+   real(r_size) :: rhoML, rhoMLold, dh, delta, ratio
    logical, dimension(:,:,:), allocatable :: processed, updated
    integer, dimension(:), allocatable :: ix0, jy0, ix, jy, istart, iend, jstart, jend
    integer, dimension(:,:), allocatable :: nobs, k2ijt
-   real(r_size), dimension(:), allocatable :: X, VTX, Y0, gammab, d, lambda, flambda, gammaa, gammainfl
+   real(r_size), dimension(:), allocatable :: X, W, VTX, Y0, Y1, gammab, d, lambda, flambda, gammaa, gammainfl
    real(r_size), dimension(:,:), allocatable :: U, V, Y, YYT
    real(r_size), dimension(:,:,:), allocatable :: Ye
    !
@@ -66,6 +67,7 @@ program letkf
    read(10, model_nl)
    !if (myid == 0) write(6, control_nl)
    close(10)
+   delta = qcthreshold
    hscale = 1000.d0*hscale/resolution
    hrange = int(floor(hscale))
    !
@@ -306,8 +308,6 @@ program letkf
    if (iflg_incremental == 1) call add_obs(obs, ybck)
    call subtract_obs(obs, ybck)
    call divide_obs(obs, error)
-   call qccheck(obs, qcthreshold, validtmp)
-   call and(valid, validtmp)
    !
    ! Second vertical localization: normalize perturbations
    !call MPI_BARRIER(MPI_COMM_WORLD, ierror)
@@ -384,7 +384,7 @@ program letkf
    inflpoly = mod(inflmode,10)
    ! Allocate
    if (ncol0 > 0) then
-      allocate(X(ne), Y(mmax,ne), Y0(mmax))
+      allocate(X(ne), W(ne), Y(mmax,ne), Y0(mmax), Y1(mmax))
       allocate(Ye(mmax,ne,nepe))
       allocate(YYT(ne0,ne0), gammab(ne0), U(ne0,ne0), V(ne,ne0))
       allocate(d(ne0), lambda(ne0), flambda(ne0), gammaa(ne0), gammainfl(ne0), VTX(ne0))
@@ -402,222 +402,219 @@ program letkf
       ! Find relevant obs
       ncol = 0
       do icol = 1, ncol0
-	 dh = sqrt(1.d0*(ix0(icol)-i)**2+1.d0*(jy0(icol)-j)**2)
-	 if (dh > hscale) cycle
-	 ncol = ncol + 1
-	 ix(ncol) = ix0(icol); jy(ncol) = jy0(icol)
+	      dh = sqrt(1.d0*(ix0(icol)-i)**2+1.d0*(jy0(icol)-j)**2)
+	      if (dh > hscale) cycle
+	      ncol = ncol + 1
+	      ix(ncol) = ix0(icol); jy(ncol) = jy0(icol)
       end do
       if (ncol == 0) cycle
       !
       ia = i-dis; ja = j-djs
       do ivar = 1, loc%nvar
          call get_nlev(rho, ivar, nlev)
-	 if (nlev > 1) nlev = nlev-1
-	 do k = 1, nlev
-	    ! Extract Y
-	    call get_field(vloc, k, ytmp)
-	    do ie = 1, ne
-	       call extract_y(ypert(ie), i, j, ix(1:ncol), jy(1:ncol), loc.correlated(ivar,:), obsspace, valid, xyloc, ytmp, mobs, Y(:,ie), ncol, mmax)
-	    end do
-	    call extract_y(obs, i, j, ix(1:ncol), jy(1:ncol), loc.correlated(ivar,:), obsspace, valid, xyloc, ytmp, mobs, Y0, ncol, mmax)
-	    if (mobs == 0) cycle
-	    !if (myid == 41) print*, myid, minval(Y0(1:mobs)), maxval(Y0(1:mobs)), minval(Y(1:mobs,:)), maxval(Y(1:mobs,:))
-	    !
-	    !
-	    !
-	    ! Eigen-decomposition
-	    if (mobs <= ne0) then
-	       ! Covariance
-	       do iobs = 1, mobs
-	          do jobs = iobs, mobs
-		     YYT(iobs,jobs) = sum(Y(iobs,:)*Y(jobs,:))
-		     if (jobs > iobs) YYT(jobs,iobs) = YYT(iobs,jobs)
-	          end do
-	       end do
-	       call allreduce2D('e', YYT(1:mobs,1:mobs), mobs, mobs)
-	       do iobs = 1, mobs
-	          YYT(iobs,iobs) = YYT(iobs,iobs) + 1.d0 
-	       end do
-	       call mtx_eigen(1, mobs, YYT(1:mobs,1:mobs), gammab(1:mobs), U(1:mobs,1:mobs), nrank)
-	       gammab(1:mobs) = gammab(1:mobs) - 1.d0
-	       ! Find rank
-	       do iobs = 1, mobs
-	          if (gammab(iobs) < 1.e-12) exit
-	       end do
-	       nrank = iobs - 1
-	       if (nrank == 0) cycle
-	       gammab(1:nrank) = sqrt(gammab(1:nrank))
-	       ! V
-	       do ie = 1, nrank
-	          do je = 1, ne
-		     V(je,ie) = sum(Y(1:mobs,je)*U(1:mobs,ie))/gammab(ie)
-	          end do
-	       end do
-	       ! Project Y0 on U
-	       do iobs = 1, nrank
-	          d(iobs) = sum(U(1:mobs,iobs)*Y0(1:mobs))
-	       end do
-	    else
-	       call MPI_BARRIER(MPI_COMM_EWORLD, ierror)
-               call MPI_GATHER(Y(1:mobs,:), mobs*ne, r_type, Ye(1:mobs,:,:), mobs*ne, r_type, 0, MPI_COMM_EWORLD, ierror)
-	       ! Covariance
-	       if (myide == 0) then
-	          do ie = 1, ne0
-	             idx = (ie-1)/ne+1; is = mod(ie-1,ne)+1
-		     do je = ie, ne0
-		        idy = (je-1)/ne+1; js = mod(je-1,ne)+1
-		        YYT(ie,je) = sum(Ye(1:mobs,is,idx)*Ye(1:mobs,js,idy))
-		        if (je > ie) YYT(je,ie) = YYT(ie,je)
-		     end do
-	          end do
-	          do ie = 1, ne0
-		     YYT(ie,ie) = YYT(ie,ie) + 1.d0
-	          end do
-	          call mtx_eigen(1, ne0, YYT, gammab, U, nrank) ! use U as V temporarily
-	          gammab(:) = gammab(:) - 1.d0
-	          ! Find rank
-	          do ie = 1, ne0
-		     if (gammab(ie) < 1.e-12) exit
-	          end do
-	          nrank = ie - 1
-	          gammab(1:nrank) = sqrt(gammab(1:nrank))
-	          !if (myide == 0) print*, myid, minval(YYT), maxval(YYT), gammab(1)
-	       end if
-	       call int_broadcast0D('e', nrank, 0)
-	       if (nrank == 0) cycle
-	       call broadcast1D('e', gammab(1:nrank), 0, nrank)
-	       ! V
-	       call broadcast2D('e', U(:,1:nrank), 0, ne0, nrank)
-	       is = myide*ne + 1; ie = is + ne - 1
-	       V(:,1:nrank) = U(is:ie,1:nrank)
-	       ! Project Y0 on U
-	       do ie = 1, ne
-	          X(ie) = sum(Y(1:mobs,ie)*Y0(1:mobs))
-	       end do
-	       do ie = 1, nrank
-	          d(ie) = sum(V(:,ie)*X(:))/gammab(ie)
-	       end do
-	       call allreduce1D('e', d(1:nrank), nrank)
-	    end if
-	    !
-	    !
-	    !
-	    ! Inflation functions
-	    lambda(1:nrank) = 1.d0/sqrt(1.d0+gammab(1:nrank)**2)
-	    !if (myid == 41) print*, i, j, mobs, nrank, lambda(1), d(1)
-	    ! Non-parametric prior
-	    if (adapmode == 1) then 
-	       do iobs = 1, nrank
-	          if (abs(d(iobs)) > 1.d0) then
-		     gammainfl(iobs) = sqrt(d(iobs)**2-1.d0)
-	          else
-		     gammainfl(iobs) = 0.d0
-	          end if
-	          gammainfl(iobs) = max(gammab(iobs),gammainfl(iobs))
-	          if (iobs > 1) then
-		     if (gammainfl(iobs) > gammainfl(iobs-1)) gammainfl(iobs) = gammainfl(iobs-1)
-	          end if
-	          flambda(iobs) = gammainfl(iobs)/(gammab(iobs)*sqrt(1.d0+gammainfl(iobs)**2))
-	       end do
-	       rho%control(ivar)%p%field(ia,ja,1,1) = gammainfl(1)/gammab(1)
-	    ! Non-parametric posterior
-	    else if (adapmode == 2) then
-	       do iobs = 1, nrank
-	          gammainfl(iobs) = gammab(iobs)*abs(d(iobs))*lambda(iobs)**2
-	          gammaa(iobs) = gammab(iobs)*lambda(iobs)
-	          gammainfl(iobs) = max(gammaa(iobs),gammainfl(iobs))
-	          if (iobs > 1) then
-		     if (gammainfl(iobs) > gammainfl(iobs-1)) gammainfl(iobs) = gammainfl(iobs-1)
-	          end if
-	          flambda(iobs) = gammainfl(iobs)/gammab(iobs)
-	       end do
-	       rho%control(ivar)%p%field(ia,ja,1,1) = gammainfl(1)/gammaa(1)
-	    ! EM algorithm: single rho
-	    else if (adapmode == 3) then
-	       inflana = 1
-	       rhoML = 1.d0
-	       do iter = 1, niteration
-	          rhoMLold = rhoML
-	          gammainfl(1:nrank) = sqrt(rhoML)*gammab(1:nrank)
-	          flambda(1:nrank) = 1.d0/sqrt(1.d0+gammainfl(1:nrank)**2)
-	          rhoML = rhoML*sum(flambda(1:nrank)**2+gammainfl(1:nrank)**2*flambda(1:nrank)**4*d(1:nrank)**2)/nrank
-	          if (rhoML <= 1.d0) then
-		     rhoML = rhoMLold
-		     exit
-	          end if
-	       end do
-	       gammainfl(1:nrank) = sqrt(rhoML)*gammab(1:nrank)
-	       flambda(1:nrank) = 1.d0/sqrt(1.d0+gammainfl(1:nrank)**2) 
-	       flambda(1:nrank) = gammainfl(1:nrank)*flambda(1:nrank)/gammab(1:nrank)
-	       rho%control(ivar)%p%field(ia,ja,1,1) = sqrt(rhoML)
-	    ! EM algorithm: multiple rho
-	    else if (adapmode == 4) then
-	       VTX(1:nrank) = 1.d0 ! usr VTX, gammaa as rhoML, rhoMLold
-	       do iter = 1, niteration
-	          gammaa(1:nrank) = VTX(1:nrank)
-	          gammainfl(1:nrank) = sqrt(VTX(1:nrank))*gammab(1:nrank)
-	          flambda(1:nrank) = 1.d0/sqrt(1.d0+gammainfl(:)**2)
-	          VTX(1:nrank) = VTX(1:nrank)*(flambda(1:nrank)**2+gammainfl(1:nrank)**2*flambda(1:nrank)**4*d(1:nrank)**2)
-	          if (maxval(VTX(1:nrank)) <= 1.d0) then
-		     VTX(1:nrank) = gammaa(1:nrank)
-		     exit
-	          end if
-	       end do
-	       do iobs = 1, nrank
-	          gammainfl(iobs) = sqrt(VTX(iobs))*gammab(iobs)
-	          gammainfl(iobs) = max(gammab(iobs),gammainfl(iobs))
-	          if (iobs > 1) then
-		     if (gammainfl(iobs) > gammainfl(iobs-1)) gammainfl(iobs) = gammainfl(iobs-1)
-	          end if
-	          flambda(iobs) = gammainfl(iobs)/(gammab(iobs)*sqrt(1.d0+gammainfl(iobs)**2))
-	       end do
-	       rho%control(ivar)%p%field(ia,ja,1,1) = sqrt(VTX(1))
-	    end if
-	    !
-	    !
-	    !
-	    ! Update X
-	    if (inflana == 1) then
-	       lambda(1:nrank) = gammab(1:nrank)*flambda(1:nrank)**2*d(1:nrank)
-	    else
-	       lambda(1:nrank) = gammab(1:nrank)*lambda(1:nrank)**2*d(1:nrank)
-	    end if
-	    flambda(1:nrank) = (1.d0-flambda(1:nrank))
-	    do iter = 1, rho%nvarnhm(ivar)
-	       ivarnhm = rho%ivarnhm(ivar,iter)
-	       ! Project X on V
-	       do ie = 1, ne
-		  X(ie) = xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,2)
-	       end do
-	       do ie = 1, nrank
-		  VTX(ie) = sum(V(:,ie)*X(:))
-	       end do
-	       call allreduce1D('e', VTX(1:nrank), nrank)
-	       ! Analysis
-	       xinc%control(ivarnhm)%p%field(ia,ja,k,2) = sum(VTX(1:nrank)*lambda(1:nrank))
-	       ! Analysis perturbations
-	       VTX(1:nrank) = flambda(1:nrank)*VTX(1:nrank)
-	       X(1:ne) = 0.d0
-	       do ie = 1, nrank
-		  X(1:ne) = X(1:ne) + VTX(ie)*V(:,ie)
-	       end do
-	       do ie = 1, ne
-		  xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,2) = xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,2) - X(ie)
-	       end do
-	       !
-	       if (itout == nt) cycle
-	       ! Project X on V
-	       do ie = 1, ne
-		  X(ie) = xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,1)
-	       end do
-	       do ie = 1, nrank
-		  VTX(ie) = sum(V(:,ie)*X(:))
-	       end do
-	       call allreduce1D('e', VTX(1:nrank), nrank)
-	       ! Analysis
-	       xinc%control(ivarnhm)%p%field(ia,ja,k,1) = sum(VTX(1:nrank)*lambda(1:nrank))
-	    end do
-	 end do
+	      if (nlev > 1) nlev = nlev-1
+	      do k = 1, nlev
+	         ! Extract Y
+	         call get_field(vloc, k, ytmp)
+	         do ie = 1, ne
+	            call extract_y(ypert(ie), i, j, ix(1:ncol), jy(1:ncol), loc.correlated(ivar,:), obsspace, valid, xyloc, ytmp, mobs, Y(:,ie), ncol, mmax)
+	         end do
+	         call extract_y(obs, i, j, ix(1:ncol), jy(1:ncol), loc.correlated(ivar,:), obsspace, valid, xyloc, ytmp, mobs, Y0, ncol, mmax)
+	         if (mobs == 0) cycle
+	         !if (myid == 41) print*, myid, minval(Y0(1:mobs)), maxval(Y0(1:mobs)), minval(Y(1:mobs,:)), maxval(Y(1:mobs,:))
+	         !
+	         !
+	         !
+            ! Firstguess
+            logp1 = 0.
+            W(:) = 0.
+            ! Majorization
+            do iter = 1, niteration
+               do iobs = 1, mobs
+                  Y1(iobs) = sum(Y(iobs,:)*W(:))
+               end do
+               call allreduce1D('e', Y1(1:mobs), mobs)
+               Y1(1:mobs) = abs(Y0(1:mobs)-Y1(1:mobs))
+               !
+               ! Cost function
+               logp0 = logp1
+               logp1 = 0.5*sum(W**2)
+               call allreduce0D('e', logp1)
+               do iobs = 1, mobs
+                  if (Y1(iobs) > delta) then
+                     logp1 = logp1 + delta*Y1(iobs)
+                     Y1(iobs) = sqrt(Y1(iobs)/delta)
+                  else
+                     logp1 = logp1 + 0.5*Y1(iobs)**2
+                     Y1(iobs) = 1.
+                  end if
+               end do
+               if (iter > 1) then
+                  if (myide == 0) then
+                     ratio = abs(logp1-logp0)/abs(logp0)
+	                  if (ratio < tolerance) then
+	                     iflag = 0
+	                  else
+	                     iflag = -1
+	                  end if
+                  end if
+                  call int_broadcast0D('e', iflag, 0)
+	               if (iflag == 0) exit
+               end if
+               !
+               ! Eigen-decomposition
+	            if (mobs <= ne0) then
+	               ! Covariance
+	               do iobs = 1, mobs
+	               do jobs = iobs, mobs
+		               YYT(iobs,jobs) = sum(Y(iobs,:)*Y(jobs,:))/(Y1(iobs)*Y1(jobs))
+		               if (jobs > iobs) YYT(jobs,iobs) = YYT(iobs,jobs)
+	               end do
+	               end do
+	               call allreduce2D('e', YYT(1:mobs,1:mobs), mobs, mobs)
+	               do iobs = 1, mobs
+	                  YYT(iobs,iobs) = YYT(iobs,iobs) + 1.d0 
+	               end do
+	               call mtx_eigen(1, mobs, YYT(1:mobs,1:mobs), gammab(1:mobs), U(1:mobs,1:mobs), nrank)
+	               gammab(1:mobs) = gammab(1:mobs) - 1.d0
+	               ! Find rank
+	               do iobs = 1, mobs
+	                  if (gammab(iobs) < 1.e-12) exit
+	               end do
+	               nrank = iobs - 1
+	               if (nrank == 0) exit
+	               gammab(1:nrank) = sqrt(gammab(1:nrank))
+	               ! V
+	               do ie = 1, nrank
+	                  do je = 1, ne
+		                  V(je,ie) = sum(Y(1:mobs,je)/Y1(1:mobs)*U(1:mobs,ie))/gammab(ie)
+	                  end do
+	               end do
+	               ! Project Y0 on U
+	               do iobs = 1, nrank
+	                  d(iobs) = sum(U(1:mobs,iobs)*Y0(1:mobs)/Y1(1:mobs))
+	               end do
+	            else
+                  call MPI_BARRIER(MPI_COMM_EWORLD, ierror)
+                  call MPI_GATHER(Y(1:mobs,:), mobs*ne, r_type, Ye(1:mobs,:,:), mobs*ne, r_type, 0, MPI_COMM_EWORLD, ierror)
+	               ! Covariance
+	               if (myide == 0) then
+	                  do ie = 1, ne0
+	                     idx = (ie-1)/ne+1; is = mod(ie-1,ne)+1
+		                  do je = ie, ne0
+		                     idy = (je-1)/ne+1; js = mod(je-1,ne)+1
+		                     YYT(ie,je) = sum(Ye(1:mobs,is,idx)*Ye(1:mobs,js,idy)/Y1(1:mobs)**2)
+		                     if (je > ie) YYT(je,ie) = YYT(ie,je)
+		                  end do
+	                  end do
+	                  do ie = 1, ne0
+		                  YYT(ie,ie) = YYT(ie,ie) + 1.d0
+	                  end do
+	                  call mtx_eigen(1, ne0, YYT, gammab, U, nrank) ! use U as V temporarily
+	                  gammab(:) = gammab(:) - 1.d0
+	                  ! Find rank
+	                  do ie = 1, ne0
+		                  if (gammab(ie) < 1.e-12) exit
+	                  end do
+	                  nrank = ie - 1
+	                  gammab(1:nrank) = sqrt(gammab(1:nrank))
+	                  !if (myide == 0) print*, myid, minval(YYT), maxval(YYT), gammab(1)
+                  end if
+                  call int_broadcast0D('e', nrank, 0)
+                  if (nrank == 0) exit
+                  call broadcast1D('e', gammab(1:nrank), 0, nrank)
+                  ! V
+                  call broadcast2D('e', U(:,1:nrank), 0, ne0, nrank)
+                  is = myide*ne + 1; ie = is + ne - 1
+                  V(:,1:nrank) = U(is:ie,1:nrank)
+                  ! Project Y0 on U
+                  do ie = 1, ne
+                     X(ie) = sum(Y(1:mobs,ie)*Y0(1:mobs)/Y1(1:mobs)**2)
+                  end do
+                  do ie = 1, nrank
+                     d(ie) = sum(V(:,ie)*X(:))/gammab(ie)
+                  end do
+                  call allreduce1D('e', d(1:nrank), nrank)
+               end if
+               !
+               ! New weights
+               lambda(1:nrank) = 1.d0/sqrt(1.d0+gammab(1:nrank)**2)
+               W(:) = 0.
+               do ie = 1, nrank
+                  W(:) = W(:) + gammab(ie)*lambda(ie)**2*d(ie)*V(:,ie)
+               end do
+            end do
+            if (nrank == 0) cycle
+            !
+            !
+            !
+            ! Inflation functions
+	         !if (myid == 41) print*, i, j, mobs, nrank, lambda(1), d(1)
+	         ! Non-parametric prior
+	         if (adapmode == 1) then 
+	            do iobs = 1, nrank
+	               if (abs(d(iobs)) > 1.d0) then
+		               gammainfl(iobs) = sqrt(d(iobs)**2-1.d0)
+	               else
+		               gammainfl(iobs) = 0.d0
+	               end if
+	               gammainfl(iobs) = max(gammab(iobs),gammainfl(iobs))
+	               if (iobs > 1) then
+		               if (gammainfl(iobs) > gammainfl(iobs-1)) gammainfl(iobs) = gammainfl(iobs-1)
+	               end if
+	               flambda(iobs) = gammainfl(iobs)/(gammab(iobs)*sqrt(1.d0+gammainfl(iobs)**2))
+	            end do
+	            rho%control(ivar)%p%field(ia,ja,1,1) = gammainfl(1)/gammab(1)
+	         ! Non-parametric posterior
+	         else if (adapmode == 2) then
+	            do iobs = 1, nrank
+	               gammainfl(iobs) = gammab(iobs)*abs(d(iobs))*lambda(iobs)**2
+	               gammaa(iobs) = gammab(iobs)*lambda(iobs)
+	               gammainfl(iobs) = max(gammaa(iobs),gammainfl(iobs))
+	               if (iobs > 1) then
+		               if (gammainfl(iobs) > gammainfl(iobs-1)) gammainfl(iobs) = gammainfl(iobs-1)
+	               end if
+	               flambda(iobs) = gammainfl(iobs)/gammab(iobs)
+	            end do
+	            rho%control(ivar)%p%field(ia,ja,1,1) = gammainfl(1)/gammaa(1)
+	         end if
+            !
+            !
+            !
+	         ! Update X
+	         flambda(1:nrank) = (1.d0-flambda(1:nrank))
+	         do iter = 1, rho%nvarnhm(ivar)
+	            ivarnhm = rho%ivarnhm(ivar,iter)
+	            do ie = 1, ne
+		            X(ie) = xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,2)
+	            end do
+               ! Analysis
+               xinc%control(ivarnhm)%p%field(ia,ja,k,2) = sum(X(:)*W(:))
+               call allreduce0D('e', xinc%control(ivarnhm)%p%field(ia,ja,k,2))
+	            ! Project X on V
+               do ie = 1, nrank
+		            VTX(ie) = sum(V(:,ie)*X(:))
+	            end do
+	            call allreduce1D('e', VTX(1:nrank), nrank)
+               ! Analysis perturbations
+	            VTX(1:nrank) = flambda(1:nrank)*VTX(1:nrank)
+	            X(1:ne) = 0.d0
+	            do ie = 1, nrank
+		            X(1:ne) = X(1:ne) + VTX(ie)*V(:,ie)
+	            end do
+	            do ie = 1, ne
+		            xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,2) = xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,2) - X(ie)
+	            end do
+	            !
+	            if (itout == nt) cycle
+	            do ie = 1, ne
+		            X(ie) = xapert(ie)%control(ivarnhm)%p%field(ia,ja,k,1)
+	            end do
+	            ! Analysis
+	            xinc%control(ivarnhm)%p%field(ia,ja,k,1) = sum(X(:)*W(:))
+               call allreduce0D('e', xinc%control(ivarnhm)%p%field(ia,ja,k,1))
+	         end do
+	      end do
       end do
    end do
    end do
@@ -662,8 +659,8 @@ program letkf
    if (ncol0 > 0) then
       deallocate(Ye)
       deallocate(k2ijt, ix0, jy0, ix, jy)
-      deallocate(X, Y, YYT, VTX, gammab, U, V)
-      deallocate(Y0, d, lambda, flambda, gammaa, gammainfl)
+      deallocate(X, W, Y, YYT, VTX, gammab, U, V)
+      deallocate(Y0, Y1, d, lambda, flambda, gammaa, gammainfl)
    end if
    deallocate(vdz, vrdz, vrdz2, zrp, vctransp, dvtransp, zrw, vctransw, dvtransw, zs)
    call destroy(info)
